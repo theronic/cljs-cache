@@ -78,6 +78,84 @@
   Object
   (toString [_] (str cache)))
 
+;; FIFO Cache
+
+(defn- empty-queue []
+  (.-EMPTY cljs.core/PersistentQueue))
+
+(defn- describe-layout [mappy limit]
+  (let [ks (keys mappy)
+        [dropping keeping] (split-at (- (count ks) limit) ks)]
+    {:dropping dropping
+     :keeping keeping
+     :queue (into (empty-queue) (take limit keeping))}))
+
+(defn- prune-queue [q k]
+  (reduce (fn [queue entry]
+            (if (= k entry)
+              queue
+              (conj queue entry)))
+          (empty-queue)
+          q))
+
+(defn- positive-safe-integer? [value]
+  (and (number? value)
+       (js/Number.isSafeInteger value)
+       (pos? value)))
+
+(defn- invalid-fifo-state! [cache q limit]
+  (when-not (and (positive-safe-integer? limit)
+                 (= (count cache) (count q))
+                 (<= (count cache) limit))
+    (throw (ex-info "Invalid FIFOCache state; construct caches with fifo-cache-factory."
+                    {:cache-count (count cache)
+                     :queue-count (count q)
+                     :limit limit}))))
+
+(defcache FIFOCache [cache q limit]
+  CacheProtocol
+  (lookup [_ item]
+    (get cache item))
+  (lookup [_ item not-found]
+    (get cache item not-found))
+  (has? [_ item]
+    (contains? cache item))
+  (hit [this item]
+    this)
+  (miss [_ item result]
+    (invalid-fifo-state! cache q limit)
+    (if-let [entry (find cache item)]
+      (FIFOCache. (assoc cache (key entry) result) q limit)
+      (let [[next-cache next-q]
+            (if (>= (count cache) limit)
+              (let [victim (peek q)]
+                (when-not (contains? cache victim)
+                  (throw
+                   (ex-info
+                    "Invalid FIFOCache queue; construct caches with fifo-cache-factory."
+                    {:victim victim :limit limit})))
+                [(dissoc cache victim) (pop q)])
+              [cache q])]
+        (FIFOCache. (assoc next-cache item result)
+                    (conj next-q item)
+                    limit))))
+  (evict [this candidate]
+    (invalid-fifo-state! cache q limit)
+    (if-let [entry (find cache candidate)]
+      (let [stored-key (key entry)]
+        (FIFOCache. (dissoc cache stored-key)
+                    (prune-queue q stored-key)
+                    limit))
+      this))
+  (seed [_ base]
+    (let [{:keys [dropping queue]} (describe-layout base limit)]
+      (FIFOCache. (reduce dissoc base dropping)
+                  queue
+                  limit)))
+  Object
+  (toString [_]
+    (str cache \, \space (pr-str q))))
+
 ;; TTL Cache
 
 (defn- get-time []
@@ -125,11 +203,11 @@
 
 ;; LRU Cache
 
-(defn- build-leastness-queue
-  [base limit start-at]
+(defn- build-leastness-queue [base]
   (into (priority-map)
-        (concat (take (- limit (count base)) (for [k (range (- limit) 0)] [k k]))
-                (for [[k _] base] [k start-at]))))
+        (map-indexed (fn [index [key _]]
+                       [key index])
+                     base)))
 
 
 (defcache LRUCache [cache lru tick limit]
@@ -143,36 +221,56 @@
   (hit [_ item]
     (let [tick+ (inc tick)]
       (LRUCache. cache
-                 (if (contains? cache item)
-                   (assoc lru item tick+)
+                 (if-let [entry (find cache item)]
+                   (assoc lru (key entry) tick+)
                    lru)
                  tick+
                  limit)))
   (miss [_ item result]
+    (when-not (and (positive-safe-integer? limit)
+                   (= (count cache) (count lru))
+                   (<= (count cache) limit))
+      (throw (ex-info "Invalid LRUCache state; construct caches with lru-cache-factory."
+                      {:cache-count (count cache)
+                       :lru-count (count lru)
+                       :limit limit})))
     (let [tick+ (inc tick)]
-      (if (>= (count lru) limit)
-        (let [k (if (contains? lru item)
-                  item
-                  (first (peek lru))) ;; minimum-key, maybe evict case
-              c (-> cache (dissoc k) (assoc item result))
-              l (-> lru (dissoc k) (assoc item tick+))]
-          (LRUCache. c l tick+ limit))
-        (LRUCache. (assoc cache item result)  ;; no change case
-                   (assoc lru item tick+)
-                   tick+
-                   limit))))
-  (evict [this key]
-    (if (contains? cache key)
-      (LRUCache. (dissoc cache key)
-                 (dissoc lru key)
-                 (inc tick)
-                 limit)
+      (if-let [entry (find cache item)]
+        (let [stored-key (key entry)]
+          (LRUCache. (assoc cache stored-key result)
+                     (assoc lru stored-key tick+)
+                     tick+
+                     limit))
+        (if (>= (count cache) limit)
+          (let [victim (first (peek lru))]
+            (when-not (contains? cache victim)
+              (throw
+               (ex-info
+                "Invalid LRUCache queue; construct caches with lru-cache-factory."
+                {:victim victim :limit limit})))
+            (LRUCache. (-> cache (dissoc victim) (assoc item result))
+                       (-> lru (dissoc victim) (assoc item tick+))
+                       tick+
+                       limit))
+          (LRUCache. (assoc cache item result)
+                     (assoc lru item tick+)
+                     tick+
+                     limit)))))
+  (evict [this candidate]
+    (if-let [entry (find cache candidate)]
+      (let [stored-key (key entry)]
+        (LRUCache. (dissoc cache stored-key)
+                   (dissoc lru stored-key)
+                   (inc tick)
+                   limit))
       this))
   (seed [_ base]
-    (LRUCache. base
-               (build-leastness-queue base limit 0)
-               0
-               limit))
+    (let [{:keys [dropping]} (describe-layout base limit)
+          retained (reduce dissoc base dropping)]
+      (LRUCache. retained
+                 (build-leastness-queue retained)
+                 (count retained)
+                 limit)))
   Object
   (toString [_]
     (str cache \, \space lru \, \space tick \, \space limit)))
@@ -185,6 +283,23 @@
   [base]
   {:pre [(map? base)]}
   (BasicCache. base))
+
+(defn fifo-cache-factory
+  "Returns a FIFO cache with the cache and FIFO queue initialized to `base`.
+
+   This function takes an optional `:threshold` argument that defines the
+   maximum number of elements in the cache before FIFO eviction applies
+   (default is 32).
+
+   If `base` contains more than `threshold` entries, only the last threshold
+   entries in its iteration order are retained."
+  [base & {threshold :threshold :or {threshold 32}}]
+  (when-not (map? base)
+    (throw (ex-info "FIFO cache seed must be a map." {:base base})))
+  (when-not (positive-safe-integer? threshold)
+    (throw (ex-info "FIFO cache threshold must be a positive safe integer."
+                    {:threshold threshold})))
+  (seed (FIFOCache. {} (empty-queue) threshold) base))
 
 (defn ttl-cache-factory
   "Returns a TTL cache with the cache and expiration-table initialied to `base` --
@@ -203,6 +318,9 @@
    This function takes an optional `:threshold` argument that defines the maximum number
    of elements in the cache before the LRU semantics apply (default is 32)."
   [base & {threshold :threshold :or {threshold 32}}]
-  {:pre [(number? threshold) (< 0 threshold)
-         (map? base)]}
+  (when-not (map? base)
+    (throw (ex-info "LRU cache seed must be a map." {:base base})))
+  (when-not (positive-safe-integer? threshold)
+    (throw (ex-info "LRU cache threshold must be a positive safe integer."
+                    {:threshold threshold})))
   (seed (LRUCache. {} (priority-map) 0 threshold) base))

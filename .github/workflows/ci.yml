@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: DeLaGuardo/setup-clojure@13.6.1
+        with:
+          cli: 1.12.5.1645
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Compile and run unoptimized tests
+        run: >-
+          clojure -M:test -m cljs.main
+          -co '{:target :nodejs :main cljs.cache-test-runner
+          :output-to "target/test-none.js" :output-dir "target/test-none-out"
+          :optimizations :none :warnings-as-errors true}'
+          -c cljs.cache-test-runner
+
+      - run: node target/test-none.js
+
+      - name: Compile and run advanced tests
+        run: >-
+          clojure -M:test -m cljs.main
+          -co '{:target :nodejs :main cljs.cache-test-runner
+          :output-to "target/test-advanced.js" :output-dir "target/test-advanced-out"
+          :optimizations :advanced :elide-asserts true :warnings-as-errors true}'
+          -c cljs.cache-test-runner
+
+      - run: node target/test-advanced.js
+
+      - name: Verify advanced test failures produce a failing process
+        run: >-
+          clojure -M:test -m cljs.main
+          -co '{:target :nodejs :main cljs.cache-failure-test-runner
+          :output-to "target/test-failure.js" :output-dir "target/test-failure-out"
+          :optimizations :advanced :elide-asserts true :warnings-as-errors true}'
+          -c cljs.cache-failure-test-runner
+
+      - name: Run intentional failure canary
+        shell: bash
+        run: |
+          set +e
+          node target/test-failure.js
+          canary_exit=$?
+          set -e
+          test "$canary_exit" -eq 86
+
+      - name: Build package
+        run: >-
+          clojure -M:dev -e
+          "(require '[cljs.cache.dev :as dev]) (dev/clean) (dev/jar)"
+
+      - name: Verify package metadata
+        shell: bash
+        run: |
+          pom="target/classes/META-INF/maven/com.github.theronic/cljs-cache/pom.xml"
+          jar="target/cljs-cache-1.1.0-SNAPSHOT.jar"
+          test -f "$pom"
+          test -f "$jar"
+          grep -q '<name>Eclipse Public License 1.0</name>' "$pom"
+          grep -q '<url>https://github.com/theronic/cljs-cache</url>' "$pom"
+          grep -q '<artifactId>cljs-priority-map</artifactId>' "$pom"
+          grep -q '<artifactId>clojurescript</artifactId>' "$pom"
+          grep -q '<artifactId>clojure</artifactId>' "$pom"
+          test "$(grep -c '<dependency>' "$pom")" -eq 1
+          test "$(grep -c '<exclusion>' "$pom")" -eq 2
+          jar tf "$jar" | grep -q 'META-INF/LICENSE$'
+          jar tf "$jar" | grep -q 'META-INF/LICENSE.html'
