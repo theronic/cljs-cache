@@ -5,7 +5,9 @@ A maintained ClojureScript port of `clojure.core.cache`, forked from
 
 This fork adds the bounded FIFO cache from `org.clojure/core.cache` 1.2.263.
 FIFO lookups do not mutate recency metadata, which makes it a useful bounded
-cache for immutable, recomputable values.
+cache for immutable, recomputable values. Its queue contains resident keys
+only: it does not preallocate sentinel slots, and updating an existing key
+does not evict a different entry or duplicate queue state.
 
 ## Dependency
 
@@ -17,7 +19,8 @@ com.github.theronic/cljs-cache {:mvn/version "1.1.0"}
 
 Until that artifact is published, depend on a tested commit from
 [`theronic/cljs-cache`](https://github.com/theronic/cljs-cache) using a Git
-dependency.
+dependency. The exact `:git/sha` will be added here after the hardening review
+is merged; do not pin the intermediate pull-request commit.
 
 ## FIFO usage
 
@@ -45,11 +48,16 @@ node target/test.js
 ```
 
 CI runs the tests with both `:none` and `:advanced` optimizations and verifies
-the generated POM and JAR metadata.
+the generated POM and JAR metadata. The advanced leg elides assertions and
+also runs an intentional-failure canary so a renamed Node property cannot turn
+a failing test run green.
 
 ## Provenance and license
 
 The fork starts from `pkpkpk/cljs-cache` commit
 `4a2a3c8c6af93f0c69c09cdca99ebfa44552c34c`. FIFO code is adapted from
-`clojure/core.cache` tag `v1.2.263`. The inherited and adapted source is
-licensed under the Eclipse Public License 1.0; see `epl-v10.html`.
+`clojure/core.cache` tag `v1.2.263`; `cljs.cache.wrapped` is adapted from
+`clojure.core.cache.wrapped`. Both retain their original Eclipse Public
+License 1.0 notices; see `epl-v10.html`. This corrects the inherited package's
+incompatible MIT metadata rather than attempting to relicense EPL-derived
+source.

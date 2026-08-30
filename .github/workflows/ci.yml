@@ -2,7 +2,16 @@ name: CI
 
 on:
   push:
+    branches: [master]
+    tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -17,7 +26,7 @@ jobs:
 
       - uses: DeLaGuardo/setup-clojure@13.6.1
         with:
-          cli: latest
+          cli: 1.12.5.1645
 
       - uses: actions/setup-node@v7
         with:
@@ -38,10 +47,27 @@ jobs:
           clojure -M:test -m cljs.main
           -co '{:target :nodejs :main cljs.cache-test-runner
           :output-to "target/test-advanced.js" :output-dir "target/test-advanced-out"
-          :optimizations :advanced :warnings-as-errors true}'
+          :optimizations :advanced :elide-asserts true :warnings-as-errors true}'
           -c cljs.cache-test-runner
 
       - run: node target/test-advanced.js
+
+      - name: Verify advanced test failures produce a failing process
+        run: >-
+          clojure -M:test -m cljs.main
+          -co '{:target :nodejs :main cljs.cache-failure-test-runner
+          :output-to "target/test-failure.js" :output-dir "target/test-failure-out"
+          :optimizations :advanced :elide-asserts true :warnings-as-errors true}'
+          -c cljs.cache-failure-test-runner
+
+      - name: Run intentional failure canary
+        shell: bash
+        run: |
+          set +e
+          node target/test-failure.js
+          canary_exit=$?
+          set -e
+          test "$canary_exit" -eq 86
 
       - name: Build package
         run: >-

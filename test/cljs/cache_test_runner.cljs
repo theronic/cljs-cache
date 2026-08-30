@@ -3,7 +3,7 @@
             [cljs.test :as test]))
 
 (defmethod test/report [::test/default :end-run-tests] [summary]
-  (set! (.-exitCode js/process)
+  (aset js/process "exitCode"
         (if (test/successful? summary) 0 1)))
 
 (defn -main []

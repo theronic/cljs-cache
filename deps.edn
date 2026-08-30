@@ -7,5 +7,5 @@
  {:test {:extra-paths ["test"]
          :extra-deps {org.clojure/clojurescript {:mvn/version "1.12.42"}}}
   :dev {:extra-paths ["src/dev"]
-        :extra-deps {io.github.clojure/tools.build {:mvn/version "0.10.6"}
-                     slipset/deps-deploy           {:mvn/version "0.2.1"}}}}}
+        :extra-deps {io.github.clojure/tools.build {:mvn/version "0.10.14"}
+                     slipset/deps-deploy           {:mvn/version "0.2.5"}}}}}
