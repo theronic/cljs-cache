@@ -115,21 +115,50 @@
     :evict (evict cache key)
     :put (miss cache key value)))
 
-(def fifo-model-keys
+(defn lru-model-step [{:keys [entries order limit] :as model}
+                      [operation key value]]
+  (case operation
+    :hit (if (contains? entries key)
+           (assoc model :order (conj (vec (remove #(= key %) order)) key))
+           model)
+    :evict (if (contains? entries key)
+             (-> model
+                 (assoc :entries (dissoc entries key))
+                 (assoc :order (vec (remove #(= key %) order))))
+             model)
+    :put (if (contains? entries key)
+           (-> model
+               (assoc :entries (assoc entries key value))
+               (assoc :order (conj (vec (remove #(= key %) order)) key)))
+           (let [full? (>= (count entries) limit)
+                 victim (when full? (first order))]
+             {:entries (cond-> entries
+                         full? (dissoc victim)
+                         true (assoc key value))
+              :order (conj (if full? (subvec order 1) order) key)
+              :limit limit}))))
+
+(defn lru-cache-step [cache [operation key value]]
+  (case operation
+    :hit (hit cache key)
+    :evict (evict cache key)
+    :put (miss cache key value)))
+
+(def cache-model-keys
   [nil false true 0 1 :a :b :cljs.cache/free [:scope 1] {:basis 2}])
 
-(def fifo-model-values
+(def cache-model-values
   [nil false true 0 1 :value {:completed true} [:answer 3]])
 
-(defn fifo-model-operations [n]
+(defn cache-model-operations [n]
   (map (fn [state]
          (let [operation (case (mod state 5)
                            0 :hit
                            1 :evict
                            :put)]
            [operation
-            (nth fifo-model-keys (mod state (count fifo-model-keys)))
-            (nth fifo-model-values (mod (* state 7) (count fifo-model-values)))]))
+            (nth cache-model-keys (mod state (count cache-model-keys)))
+            (nth cache-model-values (mod (* state 7) (count cache-model-values)))]))
        (take n (rest (iterate #(mod (+ (* % 73) 41) 9973) 17)))))
 
 (deftest test-basic-cache-ilookup
@@ -149,6 +178,14 @@
     (do-finding (BasicCache. small-map)))
   (testing "that contains? works for BasicCache"
     (do-contains (BasicCache. small-map))))
+
+(deftest test-cache-iteration
+  (testing "cache values implement modern ClojureScript iteration"
+    (doseq [cache [(BasicCache. (sorted-map :a 1 :b 2))
+                   (fifo-cache-factory (sorted-map :a 1 :b 2) :threshold 2)
+                   (ttl-cache-factory (sorted-map :a 1 :b 2) :ttl 10000)
+                   (lru-cache-factory (sorted-map :a 1 :b 2) :threshold 2)]]
+      (is (= {:a 1 :b 2} (into {} cache))))))
 
 (deftest test-fifo-cache-ilookup
   (let [empty-q (.-EMPTY cljs.core/PersistentQueue)]
@@ -271,7 +308,7 @@
             [(fifo-cache-factory {} :threshold limit)
              {:entries {} :order [] :limit limit}
              0]
-            (fifo-model-operations 500))))
+            (cache-model-operations 500))))
 
 (defn get-time []
   (.getTime (js/Date.)))
@@ -350,11 +387,44 @@
           cache (lru-cache-factory
                  (sorted-map-by case-insensitive "A" 1 "B" 2)
                  :threshold 2)
-          updated (miss cache "a" 10)
+          touched (hit cache "a")
+          updated (miss touched "a" 10)
           evicted (evict updated "b")]
+      (is (= 2 (count (.-lru touched))))
       (is (= {"A" 10 "B" 2} (into {} (.-cache updated))))
       (is (= ["A"] (vec (keys (.-cache evicted)))))
       (is (= 1 (count (.-lru evicted))))))
+  (testing "nil and false are ordinary keys and values"
+    (let [cache (-> (lru-cache-factory {} :threshold 2)
+                    (miss nil nil)
+                    (miss false false))
+          hot (reduce (fn [current _] (hit current nil)) cache (range 100))
+          final (miss hot :new 3)]
+      (is (has? cache nil))
+      (is (nil? (lookup cache nil)))
+      (is (has? cache false))
+      (is (false? (lookup cache false)))
+      (is (= {nil nil :new 3} (.-cache final)))))
+  (testing "the access clock normalizes before integer precision is lost"
+    (let [maximum js/Number.MAX_SAFE_INTEGER
+          cache (-> (lru-cache-factory {} :threshold 3)
+                    (miss :a 1)
+                    (miss :b 2)
+                    (miss :c 3))
+          near-overflow
+          (LRUCache. (.-cache cache)
+                     (-> (.-lru cache)
+                         (assoc :a (- maximum 2))
+                         (assoc :b (- maximum 1))
+                         (assoc :c maximum))
+                     maximum
+                     3)
+          touched (hit near-overflow :a)
+          final (miss touched :d 4)]
+      (is (= 3 (.-tick touched)))
+      (is (= 4 (.-tick final)))
+      (is (every? js/Number.isSafeInteger (map second (seq (.-lru final)))))
+      (is (= {:a 1 :c 3 :d 4} (.-cache final)))))
   (testing "capacity must be a positive safe integer"
     (is (thrown? js/Error (lru-cache-factory {} :threshold 0)))
     (is (thrown? js/Error (lru-cache-factory {} :threshold 1.5)))
@@ -398,3 +468,41 @@
              (assoc :d 4)
              (assoc :e 5)
              .-cache))))
+
+(deftest test-lru-cache-against-reference-model
+  (let [limit 7]
+    (reduce (fn [[cache model step] operation]
+              (let [next-cache (lru-cache-step cache operation)
+                    next-model (lru-model-step model operation)]
+                (is (= (:entries next-model) (.-cache next-cache))
+                    (str "resident entries at step " step))
+                (is (= (:order next-model)
+                       (mapv first (seq (.-lru next-cache))))
+                    (str "LRU order at step " step))
+                (is (<= (count next-cache) limit)
+                    (str "capacity at step " step))
+                [next-cache next-model (inc step)]))
+            [(lru-cache-factory {} :threshold limit)
+             {:entries {} :order [] :limit limit}
+             0]
+            (cache-model-operations 500))))
+
+(deftest test-wrapped-lru-hit-semantics
+  (testing "wrapped hit protects a frequently used resident key"
+    (let [cache-atom (wrapped/lru-cache-factory {} :threshold 2)]
+      (wrapped/miss cache-atom :hot 1)
+      (wrapped/miss cache-atom :cold 2)
+      (dotimes [_ 100]
+        (is (= 1 (wrapped/lookup cache-atom :hot)))
+        (wrapped/hit cache-atom :hot))
+      (wrapped/miss cache-atom :new 3)
+      (is (instance? LRUCache @cache-atom))
+      (is (= {:hot 1 :new 3} (into {} @cache-atom)))))
+  (testing "lookup alone is deliberately read-only"
+    (let [cache-atom (wrapped/lru-cache-factory {} :threshold 2)]
+      (wrapped/miss cache-atom :old 1)
+      (wrapped/miss cache-atom :newer 2)
+      (dotimes [_ 100]
+        (wrapped/lookup cache-atom :old))
+      (wrapped/miss cache-atom :newest 3)
+      (is (= {:newer 2 :newest 3} (into {} @cache-atom))))))

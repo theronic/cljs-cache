@@ -3,11 +3,10 @@
 A maintained ClojureScript port of `clojure.core.cache`, forked from
 [`pkpkpk/cljs-cache`](https://github.com/pkpkpk/cljs-cache).
 
-This fork adds the bounded FIFO cache from `org.clojure/core.cache` 1.2.263.
-FIFO lookups do not mutate recency metadata, which makes it a useful bounded
-cache for immutable, recomputable values. Its queue contains resident keys
-only: it does not preallocate sentinel slots, and updating an existing key
-does not evict a different entry or duplicate queue state.
+This fork tracks the cache protocol and policies from
+`org.clojure/core.cache` 1.2.263. It hardens the bounded LRU implementation for
+modern ClojureScript and adds the bounded FIFO cache that was missing from the
+original port.
 
 ## Dependency
 
@@ -24,8 +23,36 @@ dependency:
 ```clojure
 com.github.theronic/cljs-cache
 {:git/url "https://github.com/theronic/cljs-cache.git"
- :git/sha "b88d47186566efefd72a2c53dc48c8b9ba047213"}
+ :git/sha "677745d8041898a1cad1a9af1b42319e29ce79b2"}
 ```
+
+## LRU usage
+
+`lookup` reads a value and `hit` records recency; the protocol deliberately
+keeps those operations separate. A caller must perform both for an LRU hit.
+Ordinary `get`, keyword lookup, and `cljs.cache.wrapped/lookup` are read-only
+and do not make a resident key more recent.
+
+```clojure
+(require '[cljs.cache :as cache])
+
+(def c0 (cache/lru-cache-factory {} :threshold 256))
+(def c1 (cache/miss c0 [:scope :key] {:completed true}))
+(def value (cache/lookup c1 [:scope :key]))
+(def c2 (cache/hit c1 [:scope :key]))
+```
+
+The threshold must be a positive JavaScript safe integer. Seed entries are
+bounded immediately; their iteration order defines least-to-most-recent order.
+Frequently hit entries survive the admission of colder entries. The internal
+access clock is normalized before JavaScript integer precision can affect LRU
+ordering.
+
+The wrapped namespace stores the immutable cache in an atom. `wrapped/hit`,
+`wrapped/miss`, and `wrapped/evict` update it atomically. Applications that
+require independent computation, cancellation, or deadlines should compute
+outside the cache and publish the completed value explicitly instead of using
+`lookup-or-miss`.
 
 ## FIFO usage
 
@@ -38,10 +65,9 @@ com.github.theronic/cljs-cache
 ```
 
 `miss` follows the `CacheProtocol` contract: call it only when the key is
-absent. `hit` is a no-op for FIFO. The wrapped namespace also exposes
-`fifo-cache-factory`, but applications that require independent computation,
-cancellation, or deadlines should compute outside the cache and publish a
-completed value explicitly instead of using `lookup-or-miss`.
+absent. `hit` is a no-op for FIFO. Its queue contains resident keys only: it
+does not preallocate sentinel slots, and updating an existing key does not
+evict a different entry or duplicate queue state.
 
 ## Verification
 

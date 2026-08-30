@@ -25,7 +25,7 @@
 
        cljs.core/IIterable
        (~'-iterator [_#]
-        (.iterator ~base-field))
+        (cljs.core/iter ~base-field))
 
        cljs.core/IAssociative
        (~'-assoc [this# k# v#]

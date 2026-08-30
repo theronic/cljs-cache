@@ -209,6 +209,17 @@
                        [key index])
                      base)))
 
+(defn- normalize-lru-clock
+  "Preserves LRU order while keeping the JavaScript clock exactly incrementable."
+  [lru tick]
+  (if (< tick js/Number.MAX_SAFE_INTEGER)
+    [lru tick]
+    [(into (priority-map)
+           (map-indexed (fn [index [key _]]
+                          [key index])
+                        lru))
+     (max 0 (dec (count lru)))]))
+
 
 (defcache LRUCache [cache lru tick limit]
   CacheProtocol
@@ -219,7 +230,8 @@
   (has? [_ item]
     (contains? cache item))
   (hit [_ item]
-    (let [tick+ (inc tick)]
+    (let [[lru current-tick] (normalize-lru-clock lru tick)
+          tick+ (inc current-tick)]
       (LRUCache. cache
                  (if-let [entry (find cache item)]
                    (assoc lru (key entry) tick+)
@@ -234,7 +246,8 @@
                       {:cache-count (count cache)
                        :lru-count (count lru)
                        :limit limit})))
-    (let [tick+ (inc tick)]
+    (let [[lru current-tick] (normalize-lru-clock lru tick)
+          tick+ (inc current-tick)]
       (if-let [entry (find cache item)]
         (let [stored-key (key entry)]
           (LRUCache. (assoc cache stored-key result)
@@ -258,10 +271,11 @@
                      limit)))))
   (evict [this candidate]
     (if-let [entry (find cache candidate)]
-      (let [stored-key (key entry)]
+      (let [stored-key (key entry)
+            [lru current-tick] (normalize-lru-clock lru tick)]
         (LRUCache. (dissoc cache stored-key)
                    (dissoc lru stored-key)
-                   (inc tick)
+                   (inc current-tick)
                    limit))
       this))
   (seed [_ base]
@@ -313,8 +327,12 @@
   (seed (TTLCache. {} {} ttl) base))
 
 (defn lru-cache-factory
-  "Returns an LRU cache with the cache and usage-table initialied to `base` --
-   each entry is initialized with the same usage value.
+  "Returns an LRU cache with the cache and usage table initialized to `base`.
+   Seed entries are ordered from least to most recent by `base` iteration order.
+
+   If `base` contains more than `threshold` entries, only the last threshold
+   entries in its iteration order are retained.
+
    This function takes an optional `:threshold` argument that defines the maximum number
    of elements in the cache before the LRU semantics apply (default is 32)."
   [base & {threshold :threshold :or {threshold 32}}]
