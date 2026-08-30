@@ -19,8 +19,13 @@ com.github.theronic/cljs-cache {:mvn/version "1.1.0"}
 
 Until that artifact is published, depend on a tested commit from
 [`theronic/cljs-cache`](https://github.com/theronic/cljs-cache) using a Git
-dependency. The exact `:git/sha` will be added here after the hardening review
-is merged; do not pin the intermediate pull-request commit.
+dependency:
+
+```clojure
+com.github.theronic/cljs-cache
+{:git/url "https://github.com/theronic/cljs-cache.git"
+ :git/sha "b88d47186566efefd72a2c53dc48c8b9ba047213"}
+```
 
 ## FIFO usage
 
