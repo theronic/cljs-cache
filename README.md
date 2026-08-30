@@ -23,7 +23,7 @@ dependency:
 ```clojure
 com.github.theronic/cljs-cache
 {:git/url "https://github.com/theronic/cljs-cache.git"
- :git/sha "b88d47186566efefd72a2c53dc48c8b9ba047213"}
+ :git/sha "677745d8041898a1cad1a9af1b42319e29ce79b2"}
 ```
 
 ## LRU usage
