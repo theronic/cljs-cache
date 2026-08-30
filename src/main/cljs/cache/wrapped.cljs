@@ -123,23 +123,13 @@
   [base]
   (atom (c/basic-cache-factory base)))
 
-; (defn fifo-cache-factory
-;   "Returns a FIFO cache with the cache and FIFO queue initialized to `base` --
-;    the queue is filled as the values are pulled out of `base`.  If the associative
-;    structure can guarantee ordering, then the said ordering will define the
-;    eventual eviction order.  Otherwise, there are no guarantees for the eventual
-;    eviction ordering.
-;
-;    This function takes an optional `:threshold` argument that defines the maximum number
-;    of elements in the cache before the FIFO semantics apply (default is 32).
-;
-;    If the number of elements in `base` is greater than the limit then some items
-;    in `base` will be dropped from the resulting cache.  If the associative
-;    structure used as `base` can guarantee sorting, then the last `limit` elements
-;    will be used as the cache seed values.  Otherwise, there are no guarantees about
-;    the elements in the resulting cache."
-;   [base & {threshold :threshold :or {threshold 32}}]
-;   (atom (c/fifo-cache-factory base :threshold threshold)))
+(defn fifo-cache-factory
+  "Returns a FIFO cache atom initialized to `base`.
+
+   This function takes an optional `:threshold` argument that defines the maximum
+   number of elements in the cache before FIFO eviction applies (default is 32)."
+  [base & {threshold :threshold :or {threshold 32}}]
+  (atom (c/fifo-cache-factory base :threshold threshold)))
 
 (defn lru-cache-factory
   "Returns an LRU cache with the cache and usage-table initialized to `base` --

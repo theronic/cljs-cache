@@ -78,6 +78,61 @@
   Object
   (toString [_] (str cache)))
 
+;; FIFO Cache
+
+(defn- empty-queue []
+  (.-EMPTY cljs.core/PersistentQueue))
+
+(defn- describe-layout [mappy limit]
+  (let [ks (keys mappy)
+        [dropping keeping] (split-at (- (count ks) limit) ks)]
+    {:dropping dropping
+     :keeping keeping
+     :queue (into (empty-queue) (take limit keeping))}))
+
+(defn- prune-queue [q k]
+  (reduce (fn [queue entry]
+            (if (= k entry)
+              queue
+              (conj queue entry)))
+          (empty-queue)
+          q))
+
+(defcache FIFOCache [cache q limit]
+  CacheProtocol
+  (lookup [_ item]
+    (get cache item))
+  (lookup [_ item not-found]
+    (get cache item not-found))
+  (has? [_ item]
+    (contains? cache item))
+  (hit [this item]
+    this)
+  (miss [_ item result]
+    (if (contains? cache item)
+      (FIFOCache. (assoc cache item result) q limit)
+      (let [[next-cache next-q]
+            (if (>= (count cache) limit)
+              [(dissoc cache (peek q)) (pop q)]
+              [cache q])]
+        (FIFOCache. (assoc next-cache item result)
+                    (conj next-q item)
+                    limit))))
+  (evict [this key]
+    (if (contains? cache key)
+      (FIFOCache. (dissoc cache key)
+                  (prune-queue q key)
+                  limit)
+      this))
+  (seed [_ base]
+    (let [{:keys [dropping queue]} (describe-layout base limit)]
+      (FIFOCache. (apply dissoc base dropping)
+                  queue
+                  limit)))
+  Object
+  (toString [_]
+    (str cache \, \space (pr-str q))))
+
 ;; TTL Cache
 
 (defn- get-time []
@@ -185,6 +240,22 @@
   [base]
   {:pre [(map? base)]}
   (BasicCache. base))
+
+(defn fifo-cache-factory
+  "Returns a FIFO cache with the cache and FIFO queue initialized to `base`.
+
+   This function takes an optional `:threshold` argument that defines the
+   maximum number of elements in the cache before FIFO eviction applies
+   (default is 32).
+
+   If `base` contains more than `threshold` entries, only the last threshold
+   entries in its iteration order are retained."
+  [base & {threshold :threshold :or {threshold 32}}]
+  {:pre [(integer? threshold) (< 0 threshold)
+         (map? base)]
+   :post [(<= (count (.-q %)) threshold)
+          (== (count (.-cache %)) (count (.-q %)))]}
+  (seed (FIFOCache. {} (empty-queue) threshold) base))
 
 (defn ttl-cache-factory
   "Returns a TTL cache with the cache and expiration-table initialied to `base` --
